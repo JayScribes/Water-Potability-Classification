@@ -1,0 +1,132 @@
+---
+  title: "Water Potability ML"
+author: "Jeremy Larcher"
+date: '2022-06-15'
+output: html_document
+---
+  
+  ```{r Libraries}
+library(tidyr)
+library(ggplot2)
+library(corrr)
+library(rsample)
+library(recipes)
+library(parsnip)
+library(yardstick)
+library(skimr)
+library(psych)
+library(ranger)
+library(patchwork)
+library(tidymodels)
+```
+
+```{r EDA & Cleaning}
+
+skim(water)
+
+
+Water %>% 
+  select(Potability, ph, Hardness, Solids, Chloramines, Sulfate, Conductivity, Organic_carbon, Trihalomethanes, Turbidity) %>% 
+  ggpairs(columns = 2:10, aes(color = Potability, alpha = 0.5))
+
+
+Water$Potability <- as.numeric(Water$Potability)
+
+
+data <- Water %>% 
+  filter(!is.na(ph)) %>% 
+  filter(!is.na(Sulfate)) %>% 
+  filter(!is.na(Trihalomethanes)) %>% 
+  select(-Organic_carbon, -Trihalomethanes, -Turbidity)
+
+data$Potability <- as.factor(data$Potability)
+
+skim(data)
+```
+
+```{r Splitting Data}
+set.seed(112233)
+data_split <- initial_split(data, strata = Potability)
+data_train <- training(data_split)
+data_test <- testing(data_split)
+```
+
+```{r Resamples}
+set.seed(456)
+water_boot <- bootstraps(data_train)
+water_boot
+```
+
+```{r Generating Models}
+
+glm_spec <- logistic_reg() %>% 
+  set_engine("glm")
+
+rf_spec <- rand_forest() %>% 
+  set_mode("classification") %>% 
+  set_engine ("ranger")
+
+```
+
+```{r Workflow}
+water_wf <- workflow() %>% 
+  add_formula(Potability ~ .) %>% 
+  step_normalize(all_numeric(), -all_outcomes())
+
+water_wf
+```
+
+```{r Fitting RF onto data}
+rf_results <- water_wf %>% 
+  add_model(rf_spec) %>% 
+  fit_resamples(resamples = water_boot,
+                control = control_resamples(save_pred = TRUE, verbose = TRUE))
+```
+
+```{r Fitting LM onto data}
+glm_results <- water_wf %>% 
+  add_model(glm_spec) %>% 
+  fit_resamples(resamples = water_boot,
+                control = control_resamples(save_pred = TRUE, verbose = TRUE))
+```
+
+```{r Collecting Metrics}
+collect_metrics (rf_results)
+
+collect_metrics (glm_results)
+```
+
+```{r Confusion Matrix}
+
+glm_results %>% 
+  conf_mat_resampled()
+
+rf_results %>% 
+  conf_mat_resampled()
+```
+
+```{r ROC Curve}
+rf_results %>% 
+  collect_predictions() %>% 
+  group_by(id) %>% 
+  roc_curve(Potability, .pred_1) %>% 
+  ggplot(aes(1 - specificity, sensitivity, color = id))+
+  geom_abline(lty = 2, color = "gray90", size = 1.5)+
+  geom_path(show.legend = FALSE, alpha = 0.6, size =1.2)+
+  coord_equal()+theme_classic()
+```
+
+```{r Evaluating on Testing Data}
+water_final <- water_wf %>% 
+  add_model(rf_spec) %>% 
+  last_fit(data_split)
+
+water_final
+
+collect_metrics(water_final)
+```
+
+```{r Confusion Matrix - Test}
+collect_predictions(water_final) %>% 
+  conf_mat(Potability, .pred_class)
+```
